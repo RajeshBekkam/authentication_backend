@@ -1,0 +1,59 @@
+@host = http://localhost:5154
+@email = alice@example.com
+@password = correct-horse-battery-staple
+
+### Register
+POST {{host}}/api/auth/register
+Content-Type: application/json
+
+{ "email": "{{email}}", "password": "{{password}}" }
+
+### Login (bearer) - copy "token" from the response into @token below
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{ "email": "{{email}}", "password": "{{password}}", "transport": "bearer" }
+
+###
+@token = PASTE_TOKEN_HERE
+
+### Who am I
+GET {{host}}/api/auth/me
+Authorization: Bearer {{token}}
+
+### My sessions
+GET {{host}}/api/account/sessions
+Authorization: Bearer {{token}}
+
+### Revoke all my other sessions
+POST {{host}}/api/account/sessions/revoke-others
+Authorization: Bearer {{token}}
+
+### Change password (revokes all other sessions)
+POST {{host}}/api/account/change-password
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "currentPassword": "{{password}}", "newPassword": "another-long-passphrase" }
+
+### Logout
+POST {{host}}/api/auth/logout
+Authorization: Bearer {{token}}
+
+### Login (cookie) - state-changing requests then need X-CSRF-Token from the response
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{ "email": "{{email}}", "password": "{{password}}", "transport": "cookie" }
+
+### Admin: list users (requires users.read)
+GET {{host}}/api/admin/users?page=1&pageSize=25
+Authorization: Bearer {{token}}
+
+### Admin: roles and permissions
+GET {{host}}/api/admin/roles
+Authorization: Bearer {{token}}
+
+### Admin: audit log
+GET {{host}}/api/admin/audit?pageSize=50
+Authorization: Bearer {{token}}
