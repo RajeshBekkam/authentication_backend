@@ -47,7 +47,7 @@ public sealed record SessionResponse(
     string? UserAgent,
     bool IsCurrent)
 {
-    public static SessionResponse From(SessionRecord s, Guid? currentSessionId) => new(
+    public static SessionResponse From(UserSession s, Guid? currentSessionId) => new(
         s.Id, s.Transport, s.CreatedUtc, s.LastSeenUtc, s.IdleExpiresUtc, s.AbsoluteExpiresUtc,
         s.RevokedUtc, s.RevokedReason, s.IpAddress, s.UserAgent, s.Id == currentSessionId);
 }
@@ -61,7 +61,7 @@ public sealed record UserSummaryResponse(
     DateTimeOffset? LockoutEndUtc,
     DateTimeOffset CreatedUtc)
 {
-    public static UserSummaryResponse From(UserRecord u, DateTimeOffset now) => new(
+    public static UserSummaryResponse From(UserAccount u, DateTimeOffset now) => new(
         u.Id, u.Email, u.IsDisabled, u.DisabledAtUtc, u.IsLockedOut(now), u.LockoutEndUtc, u.CreatedUtc);
 }
 
@@ -83,3 +83,20 @@ public sealed record CreateRoleRequest(
 public sealed record SetPermissionsRequest([Required, MaxLength(256)] IReadOnlyList<string> Permissions);
 
 public sealed record RoleResponse(string Name, string? Description, bool IsSystem, IReadOnlyList<string> Permissions);
+
+public sealed record PermissionResponse(int Id, string Name, string? Description);
+
+public sealed record AuditEntryResponse(
+    long Id,
+    DateTimeOffset OccurredUtc,
+    string EventType,
+    Guid? UserId,
+    Guid? ActorUserId,
+    Guid? SessionId,
+    string? IpAddress,
+    string? UserAgent,
+    string? Details)
+{
+    public static AuditEntryResponse From(AuditLogEntry a) => new(
+        a.Id, a.OccurredUtc, a.EventType, a.UserId, a.ActorUserId, a.SessionId, a.IpAddress, a.UserAgent, a.Details);
+}

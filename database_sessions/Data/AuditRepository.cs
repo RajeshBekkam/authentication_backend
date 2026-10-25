@@ -1,28 +1,26 @@
-using Dapper;
+using Microsoft.EntityFrameworkCore;
 
 namespace DatabaseSessions.Data;
 
-public sealed class AuditRepository(SqlConnectionFactory db)
+public sealed class AuditRepository(IDbContextFactory<AuthDbContext> dbFactory)
 {
-    public async Task InsertAsync(AuditRecord record, CancellationToken ct = default)
+    public async Task InsertAsync(AuditLogEntry entry, CancellationToken ct = default)
     {
-        await using var conn = await db.OpenAsync(ct);
-        await conn.ExecuteAsync(new CommandDefinition("""
-            INSERT INTO auth.AuditLog (OccurredUtc, EventType, UserId, ActorUserId, SessionId, IpAddress, UserAgent, Details)
-            VALUES (@OccurredUtc, @EventType, @UserId, @ActorUserId, @SessionId, @IpAddress, @UserAgent, @Details);
-            """, record, cancellationToken: ct));
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        db.AuditLog.Add(entry);
+        await db.SaveChangesAsync(ct);
     }
 
-    public async Task<IReadOnlyList<AuditRecord>> QueryAsync(Guid? userId, string? eventType, int page, int pageSize,
+    public async Task<IReadOnlyList<AuditLogEntry>> QueryAsync(Guid? userId, string? eventType, int page, int pageSize,
         CancellationToken ct = default)
     {
-        await using var conn = await db.OpenAsync(ct);
-        return (await conn.QueryAsync<AuditRecord>(new CommandDefinition("""
-            SELECT Id, OccurredUtc, EventType, UserId, ActorUserId, SessionId, IpAddress, UserAgent, Details
-            FROM auth.AuditLog
-            WHERE (@userId IS NULL OR UserId = @userId) AND (@eventType IS NULL OR EventType = @eventType)
-            ORDER BY Id DESC
-            OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
-            """, new { userId, eventType, offset = (page - 1) * pageSize, pageSize }, cancellationToken: ct))).AsList();
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        var query = db.AuditLog.AsNoTracking();
+        if (userId is { } uid) query = query.Where(a => a.UserId == uid);
+        if (!string.IsNullOrEmpty(eventType)) query = query.Where(a => a.EventType == eventType);
+        return await query
+            .OrderByDescending(a => a.Id)
+            .Skip((page - 1) * pageSize).Take(pageSize)
+            .ToListAsync(ct);
     }
 }

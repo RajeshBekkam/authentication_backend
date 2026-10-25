@@ -5,6 +5,7 @@ using DatabaseSessions.Security;
 using DatabaseSessions.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.EntityFrameworkCore;
 using SessionOptions = DatabaseSessions.Options.SessionOptions;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -15,10 +16,11 @@ builder.Services.AddOptions<LockoutOptions>().BindConfiguration(LockoutOptions.S
 builder.Services.AddOptions<PasswordHashingOptions>().BindConfiguration(PasswordHashingOptions.Section).ValidateDataAnnotations().ValidateOnStart();
 builder.Services.AddOptions<BootstrapAdminOptions>().BindConfiguration(BootstrapAdminOptions.Section);
 
-// Infrastructure
+// Infrastructure. Repositories create a short-lived DbContext per operation via the factory.
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddSingleton<SqlConnectionFactory>();
-builder.Services.AddSingleton<DatabaseMigrator>();
+builder.Services.AddDbContextFactory<AuthDbContext>(options => options.UseSqlServer(
+    builder.Configuration.GetConnectionString("AuthDb"),
+    sql => sql.UseQuerySplittingBehavior(QuerySplittingBehavior.SingleQuery)));
 builder.Services.AddSingleton<UserRepository>();
 builder.Services.AddSingleton<SessionRepository>();
 builder.Services.AddSingleton<RoleRepository>();
@@ -76,11 +78,18 @@ builder.Services.AddOpenApi();
 
 var app = builder.Build();
 
+if (string.IsNullOrWhiteSpace(app.Configuration.GetConnectionString("AuthDb")))
+{
+    throw new InvalidOperationException("Connection string 'AuthDb' is not configured.");
+}
+
 using (var scope = app.Services.CreateScope())
 {
     if (app.Configuration.GetValue<bool>("Database:MigrateOnStartup"))
     {
-        await scope.ServiceProvider.GetRequiredService<DatabaseMigrator>().MigrateAsync();
+        // Creates the database if needed; EF Core 9 takes a database lock so concurrent instances are safe.
+        await using var db = await scope.ServiceProvider.GetRequiredService<IDbContextFactory<AuthDbContext>>().CreateDbContextAsync();
+        await db.Database.MigrateAsync();
     }
     await scope.ServiceProvider.GetRequiredService<AdminBootstrapper>().RunAsync();
 }

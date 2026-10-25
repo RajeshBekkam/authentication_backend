@@ -124,7 +124,7 @@ public sealed class AuthService(
         var idle = Min(now + _session.IdleTimeout, absolute);
         var sessionId = Guid.CreateVersion7();
 
-        var evicted = await sessions.CreateAsync(new NewSession
+        var evicted = await sessions.CreateAsync(new UserSession
         {
             Id = sessionId,
             TokenHash = SessionTokens.Hash(token),
@@ -132,6 +132,7 @@ public sealed class AuthService(
             Transport = transport,
             CsrfToken = csrf,
             CreatedUtc = now,
+            LastSeenUtc = now,
             IdleExpiresUtc = idle,
             AbsoluteExpiresUtc = absolute,
             IpAddress = ipAddress,

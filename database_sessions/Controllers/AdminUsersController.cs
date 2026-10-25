@@ -151,9 +151,10 @@ public sealed class AdminUsersController(
 
     [HttpGet("audit")]
     [HasPermission(Permissions.AuditRead)]
-    public Task<IReadOnlyList<AuditRecord>> Audit([FromServices] AuditRepository auditLog, Guid? userId, string? eventType,
+    public async Task<IEnumerable<AuditEntryResponse>> Audit([FromServices] AuditRepository auditLog, Guid? userId, string? eventType,
         int page = 1, int pageSize = 50, CancellationToken ct = default) =>
-        auditLog.QueryAsync(userId, eventType, Math.Max(page, 1), Math.Clamp(pageSize, 1, 200), ct);
+        (await auditLog.QueryAsync(userId, eventType, Math.Max(page, 1), Math.Clamp(pageSize, 1, 200), ct))
+            .Select(AuditEntryResponse.From);
 
     private async Task<bool> IsLastActiveAdminAsync(Guid userId, CancellationToken ct)
     {

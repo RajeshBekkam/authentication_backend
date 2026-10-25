@@ -1,6 +1,6 @@
 # Database-Session Authentication Backend
 
-ASP.NET Core (.NET 9) Web API + SQL Server + Dapper. The database is the single source of truth for
+ASP.NET Core (.NET 9) Web API + SQL Server + EF Core 9. The database is the single source of truth for
 authentication, session validity, account state and authorization — every request is validated against it.
 
 ## Run
@@ -13,9 +13,21 @@ authentication, session validity, account state and authorization — every requ
    dotnet user-secrets set "Auth:BootstrapAdmin:Email" "admin@example.com"
    dotnet user-secrets set "Auth:BootstrapAdmin:Password" "<a long admin passphrase>"
    ```
-3. `dotnet run` — in Development the `AuthDb` database is created and `Data/Scripts/*.sql` are applied
-   automatically (tracked in `dbo.SchemaVersions`). The bootstrap admin is created only if no Admin exists.
+3. `dotnet run` — in Development the `AuthDb` database is created and EF Core migrations in `Data/Migrations`
+   are applied automatically. The bootstrap admin is created only if no Admin exists.
 4. OpenAPI document (Development): `GET /openapi/v1.json`. Sample calls: `database_sessions.http`.
+
+## Data access & migrations
+
+- `Data/AuthDbContext.cs` defines the schema (schema `auth`) and seeds the system roles and permissions.
+- Repositories use `IDbContextFactory<AuthDbContext>` and create a short-lived context per operation. Hot paths
+  (failed-login counter, session touch, revocation) use `ExecuteUpdate`/`ExecuteDelete`, so they are single atomic SQL statements.
+- `dotnet-ef` is pinned as a local tool (`dotnet tool restore`).
+  ```powershell
+  dotnet ef migrations add <Name> --output-dir Data/Migrations   # after changing the model
+  dotnet ef database update                                      # apply manually
+  dotnet ef migrations script --idempotent -o migrate.sql         # for production deployments
+  ```
 
 ## Design
 
@@ -63,8 +75,8 @@ disabled or demoted; the Admin role's permissions are immutable.
 
 ## Production notes
 
-- Don't run as `sa`; create a least-privilege SQL login (`db_datareader`/`db_datawriter` + EXECUTE) and run
-  migrations separately with an elevated login (`Database:MigrateOnStartup=false` is the default outside Development).
+- Don't run as `sa`; create a least-privilege SQL login (`db_datareader`/`db_datawriter`) and apply the
+  idempotent migration script separately with an elevated login (`Database:MigrateOnStartup=false` is the default outside Development).
 - Use a trusted certificate on SQL Server and drop `TrustServerCertificate=True`.
 - Behind a reverse proxy, configure `ForwardedHeaders` with explicit `KnownProxies` so client IPs (rate limiting, audit) are correct.
 - The `__Host-` cookie with `SameSite=Strict` assumes the browser client is same-site with the API.

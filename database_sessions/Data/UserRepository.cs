@@ -1,54 +1,50 @@
-using Dapper;
 using Microsoft.Data.SqlClient;
+using Microsoft.EntityFrameworkCore;
 
 namespace DatabaseSessions.Data;
 
-public sealed class UserRepository(SqlConnectionFactory db)
+public sealed class UserRepository(IDbContextFactory<AuthDbContext> dbFactory)
 {
-    private const string UserColumns = """
-        Id, Email, NormalizedEmail, PasswordHash, IsDisabled, DisabledAtUtc, FailedLoginCount,
-        LockoutEndUtc, PasswordChangedUtc, CreatedUtc, UpdatedUtc
-        """;
-
-    public async Task<UserRecord?> FindByNormalizedEmailAsync(string normalizedEmail, CancellationToken ct = default)
+    public async Task<UserAccount?> FindByNormalizedEmailAsync(string normalizedEmail, CancellationToken ct = default)
     {
-        await using var conn = await db.OpenAsync(ct);
-        return await conn.QuerySingleOrDefaultAsync<UserRecord>(new CommandDefinition(
-            $"SELECT {UserColumns} FROM auth.Users WHERE NormalizedEmail = @normalizedEmail",
-            new { normalizedEmail }, cancellationToken: ct));
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Users.AsNoTracking().SingleOrDefaultAsync(u => u.NormalizedEmail == normalizedEmail, ct);
     }
 
-    public async Task<UserRecord?> FindByIdAsync(Guid id, CancellationToken ct = default)
+    public async Task<UserAccount?> FindByIdAsync(Guid id, CancellationToken ct = default)
     {
-        await using var conn = await db.OpenAsync(ct);
-        return await conn.QuerySingleOrDefaultAsync<UserRecord>(new CommandDefinition(
-            $"SELECT {UserColumns} FROM auth.Users WHERE Id = @id", new { id }, cancellationToken: ct));
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Users.AsNoTracking().SingleOrDefaultAsync(u => u.Id == id, ct);
     }
 
     /// <summary>Creates a user with the given role. Returns false if the email is already taken.</summary>
     public async Task<bool> CreateAsync(Guid id, string email, string normalizedEmail, string passwordHash, string roleName,
         DateTimeOffset now, CancellationToken ct = default)
     {
-        await using var conn = await db.OpenAsync(ct);
-        await using var tx = (SqlTransaction)await conn.BeginTransactionAsync(ct);
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+
+        var roleId = await db.Roles.Where(r => r.Name == roleName).Select(r => (int?)r.Id).SingleOrDefaultAsync(ct)
+            ?? throw new InvalidOperationException($"Role '{roleName}' does not exist.");
+
+        db.Users.Add(new UserAccount
+        {
+            Id = id,
+            Email = email,
+            NormalizedEmail = normalizedEmail,
+            PasswordHash = passwordHash,
+            PasswordChangedUtc = now,
+            CreatedUtc = now,
+            UpdatedUtc = now,
+            UserRoles = [new UserRole { UserId = id, RoleId = roleId }],
+        });
+
         try
         {
-            await conn.ExecuteAsync(new CommandDefinition("""
-                INSERT INTO auth.Users (Id, Email, NormalizedEmail, PasswordHash, PasswordChangedUtc, CreatedUtc, UpdatedUtc)
-                VALUES (@id, @email, @normalizedEmail, @passwordHash, @now, @now, @now);
-
-                INSERT INTO auth.UserRoles (UserId, RoleId)
-                SELECT @id, Id FROM auth.Roles WHERE Name = @roleName;
-
-                IF @@ROWCOUNT = 0 THROW 50001, 'Role does not exist.', 1;
-                """,
-                new { id, email, normalizedEmail, passwordHash, roleName, now }, tx, cancellationToken: ct));
-            await tx.CommitAsync(ct);
+            await db.SaveChangesAsync(ct);
             return true;
         }
-        catch (SqlException ex) when (ex.Number is 2627 or 2601)
+        catch (DbUpdateException ex) when (ex.InnerException is SqlException { Number: 2627 or 2601 })
         {
-            await tx.RollbackAsync(ct);
             return false;
         }
     }
@@ -60,145 +56,131 @@ public sealed class UserRepository(SqlConnectionFactory db)
     public async Task<bool> RegisterFailedLoginAsync(Guid id, int maxAttempts, DateTimeOffset lockoutEnd, DateTimeOffset now,
         CancellationToken ct = default)
     {
-        await using var conn = await db.OpenAsync(ct);
-        var lockedOut = await conn.QuerySingleOrDefaultAsync<bool?>(new CommandDefinition("""
-            UPDATE auth.Users
-            SET FailedLoginCount = CASE WHEN FailedLoginCount + 1 >= @maxAttempts THEN 0 ELSE FailedLoginCount + 1 END,
-                LockoutEndUtc    = CASE WHEN FailedLoginCount + 1 >= @maxAttempts THEN @lockoutEnd ELSE LockoutEndUtc END,
-                UpdatedUtc       = @now
-            OUTPUT CAST(CASE WHEN deleted.FailedLoginCount + 1 >= @maxAttempts THEN 1 ELSE 0 END AS bit)
-            WHERE Id = @id;
-            """, new { id, maxAttempts, lockoutEnd, now }, cancellationToken: ct));
-        return lockedOut ?? false;
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+
+        // A single UPDATE evaluates every SET against the pre-update row, so this is race-free.
+        var updated = await db.Users.Where(u => u.Id == id).ExecuteUpdateAsync(s => s
+            .SetProperty(u => u.LockoutEndUtc, u => u.FailedLoginCount + 1 >= maxAttempts ? lockoutEnd : u.LockoutEndUtc)
+            .SetProperty(u => u.FailedLoginCount, u => u.FailedLoginCount + 1 >= maxAttempts ? 0 : u.FailedLoginCount + 1)
+            .SetProperty(u => u.UpdatedUtc, now), ct);
+        if (updated == 0) return false;
+
+        // The row is still locked by our UPDATE, so this reads exactly what we wrote.
+        var currentLockoutEnd = await db.Users.Where(u => u.Id == id).Select(u => u.LockoutEndUtc).SingleAsync(ct);
+        await tx.CommitAsync(ct);
+        return currentLockoutEnd == lockoutEnd;
     }
 
     public async Task RecordSuccessfulLoginAsync(Guid id, string? newPasswordHash, DateTimeOffset now, CancellationToken ct = default)
     {
-        await using var conn = await db.OpenAsync(ct);
-        await conn.ExecuteAsync(new CommandDefinition("""
-            UPDATE auth.Users
-            SET FailedLoginCount = 0,
-                LockoutEndUtc    = NULL,
-                PasswordHash     = COALESCE(@newPasswordHash, PasswordHash),
-                UpdatedUtc       = @now
-            WHERE Id = @id;
-            """, new { id, newPasswordHash, now }, cancellationToken: ct));
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        await db.Users.Where(u => u.Id == id).ExecuteUpdateAsync(s => s
+            .SetProperty(u => u.FailedLoginCount, 0)
+            .SetProperty(u => u.LockoutEndUtc, (DateTimeOffset?)null)
+            .SetProperty(u => u.PasswordHash, u => newPasswordHash ?? u.PasswordHash)
+            .SetProperty(u => u.UpdatedUtc, now), ct);
     }
 
     public async Task ChangePasswordAsync(Guid id, string passwordHash, DateTimeOffset now, CancellationToken ct = default)
     {
-        await using var conn = await db.OpenAsync(ct);
-        await conn.ExecuteAsync(new CommandDefinition("""
-            UPDATE auth.Users
-            SET PasswordHash = @passwordHash, PasswordChangedUtc = @now, UpdatedUtc = @now
-            WHERE Id = @id;
-            """, new { id, passwordHash, now }, cancellationToken: ct));
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        await db.Users.Where(u => u.Id == id).ExecuteUpdateAsync(s => s
+            .SetProperty(u => u.PasswordHash, passwordHash)
+            .SetProperty(u => u.PasswordChangedUtc, now)
+            .SetProperty(u => u.UpdatedUtc, now), ct);
     }
 
     /// <summary>Disables the account and revokes all its sessions in one transaction.</summary>
     public async Task<bool> DisableAsync(Guid id, DateTimeOffset now, CancellationToken ct = default)
     {
-        await using var conn = await db.OpenAsync(ct);
-        await using var tx = (SqlTransaction)await conn.BeginTransactionAsync(ct);
-        var updated = await conn.ExecuteAsync(new CommandDefinition("""
-            UPDATE auth.Users SET IsDisabled = 1, DisabledAtUtc = @now, UpdatedUtc = @now WHERE Id = @id;
-            """, new { id, now }, tx, cancellationToken: ct));
-        await conn.ExecuteAsync(new CommandDefinition("""
-            UPDATE auth.Sessions SET RevokedUtc = @now, RevokedReason = 'account_disabled'
-            WHERE UserId = @id AND RevokedUtc IS NULL;
-            """, new { id, now }, tx, cancellationToken: ct));
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+
+        var updated = await db.Users.Where(u => u.Id == id).ExecuteUpdateAsync(s => s
+            .SetProperty(u => u.IsDisabled, true)
+            .SetProperty(u => u.DisabledAtUtc, now)
+            .SetProperty(u => u.UpdatedUtc, now), ct);
+        await db.Sessions.Where(x => x.UserId == id && x.RevokedUtc == null).ExecuteUpdateAsync(s => s
+            .SetProperty(x => x.RevokedUtc, now)
+            .SetProperty(x => x.RevokedReason, "account_disabled"), ct);
+
         await tx.CommitAsync(ct);
         return updated == 1;
     }
 
     public async Task<bool> EnableAsync(Guid id, DateTimeOffset now, CancellationToken ct = default)
     {
-        await using var conn = await db.OpenAsync(ct);
-        return await conn.ExecuteAsync(new CommandDefinition("""
-            UPDATE auth.Users SET IsDisabled = 0, DisabledAtUtc = NULL, UpdatedUtc = @now WHERE Id = @id;
-            """, new { id, now }, cancellationToken: ct)) == 1;
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Users.Where(u => u.Id == id).ExecuteUpdateAsync(s => s
+            .SetProperty(u => u.IsDisabled, false)
+            .SetProperty(u => u.DisabledAtUtc, (DateTimeOffset?)null)
+            .SetProperty(u => u.UpdatedUtc, now), ct) == 1;
     }
 
     public async Task<bool> UnlockAsync(Guid id, DateTimeOffset now, CancellationToken ct = default)
     {
-        await using var conn = await db.OpenAsync(ct);
-        return await conn.ExecuteAsync(new CommandDefinition("""
-            UPDATE auth.Users SET FailedLoginCount = 0, LockoutEndUtc = NULL, UpdatedUtc = @now WHERE Id = @id;
-            """, new { id, now }, cancellationToken: ct)) == 1;
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Users.Where(u => u.Id == id).ExecuteUpdateAsync(s => s
+            .SetProperty(u => u.FailedLoginCount, 0)
+            .SetProperty(u => u.LockoutEndUtc, (DateTimeOffset?)null)
+            .SetProperty(u => u.UpdatedUtc, now), ct) == 1;
     }
 
     public async Task<IReadOnlyList<string>> GetRolesAsync(Guid userId, CancellationToken ct = default)
     {
-        await using var conn = await db.OpenAsync(ct);
-        return (await conn.QueryAsync<string>(new CommandDefinition("""
-            SELECT r.Name FROM auth.UserRoles ur JOIN auth.Roles r ON r.Id = ur.RoleId
-            WHERE ur.UserId = @userId ORDER BY r.Name;
-            """, new { userId }, cancellationToken: ct))).AsList();
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.UserRoles.Where(ur => ur.UserId == userId)
+            .Select(ur => ur.Role.Name).OrderBy(n => n).ToListAsync(ct);
     }
 
     public async Task<IReadOnlyList<string>> GetPermissionsAsync(Guid userId, CancellationToken ct = default)
     {
-        await using var conn = await db.OpenAsync(ct);
-        return (await conn.QueryAsync<string>(new CommandDefinition("""
-            SELECT DISTINCT p.Name
-            FROM auth.UserRoles ur
-            JOIN auth.RolePermissions rp ON rp.RoleId = ur.RoleId
-            JOIN auth.Permissions p ON p.Id = rp.PermissionId
-            WHERE ur.UserId = @userId ORDER BY p.Name;
-            """, new { userId }, cancellationToken: ct))).AsList();
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.UserRoles.Where(ur => ur.UserId == userId)
+            .SelectMany(ur => ur.Role.RolePermissions.Select(rp => rp.Permission.Name))
+            .Distinct().OrderBy(n => n).ToListAsync(ct);
     }
 
     /// <summary>Replaces the user's roles. Returns false if any role name does not exist.</summary>
     public async Task<bool> SetRolesAsync(Guid userId, IReadOnlyCollection<string> roleNames, CancellationToken ct = default)
     {
-        await using var conn = await db.OpenAsync(ct);
-        await using var tx = (SqlTransaction)await conn.BeginTransactionAsync(ct);
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
 
-        var roleIds = (await conn.QueryAsync<int>(new CommandDefinition(
-            "SELECT Id FROM auth.Roles WHERE Name IN @roleNames", new { roleNames }, tx, cancellationToken: ct))).AsList();
-        if (roleIds.Count != roleNames.Count)
-        {
-            await tx.RollbackAsync(ct);
-            return false;
-        }
+        var names = roleNames.ToArray();
+        var roleIds = await db.Roles.Where(r => names.Contains(r.Name)).Select(r => r.Id).ToListAsync(ct);
+        if (roleIds.Count != names.Length) return false;
 
-        await conn.ExecuteAsync(new CommandDefinition(
-            "DELETE FROM auth.UserRoles WHERE UserId = @userId", new { userId }, tx, cancellationToken: ct));
-        await conn.ExecuteAsync(new CommandDefinition(
-            "INSERT INTO auth.UserRoles (UserId, RoleId) VALUES (@userId, @roleId)",
-            roleIds.Select(roleId => new { userId, roleId }), tx, cancellationToken: ct));
+        await db.UserRoles.Where(ur => ur.UserId == userId).ExecuteDeleteAsync(ct);
+        db.UserRoles.AddRange(roleIds.Select(roleId => new UserRole { UserId = userId, RoleId = roleId }));
+        await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
         return true;
     }
 
     public async Task<int> CountUsersInRoleAsync(string roleName, bool activeOnly, CancellationToken ct = default)
     {
-        await using var conn = await db.OpenAsync(ct);
-        return await conn.ExecuteScalarAsync<int>(new CommandDefinition("""
-            SELECT COUNT(*) FROM auth.UserRoles ur JOIN auth.Roles r ON r.Id = ur.RoleId
-            JOIN auth.Users u ON u.Id = ur.UserId
-            WHERE r.Name = @roleName AND (@activeOnly = 0 OR u.IsDisabled = 0);
-            """, new { roleName, activeOnly }, cancellationToken: ct));
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.UserRoles.CountAsync(ur => ur.Role.Name == roleName && (!activeOnly || !ur.User.IsDisabled), ct);
     }
 
-    public async Task<(IReadOnlyList<UserRecord> Items, int Total)> ListAsync(string? search, int page, int pageSize,
+    public async Task<(IReadOnlyList<UserAccount> Items, int Total)> ListAsync(string? search, int page, int pageSize,
         CancellationToken ct = default)
     {
-        await using var conn = await db.OpenAsync(ct);
-        var pattern = string.IsNullOrWhiteSpace(search) ? null : "%" + EscapeLike(search.Trim().ToUpperInvariant()) + "%";
-        using var multi = await conn.QueryMultipleAsync(new CommandDefinition($"""
-            SELECT COUNT(*) FROM auth.Users WHERE @pattern IS NULL OR NormalizedEmail LIKE @pattern ESCAPE '\';
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        var query = db.Users.AsNoTracking();
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var normalized = search.Trim().ToUpperInvariant();
+            query = query.Where(u => u.NormalizedEmail.Contains(normalized));
+        }
 
-            SELECT {UserColumns} FROM auth.Users
-            WHERE @pattern IS NULL OR NormalizedEmail LIKE @pattern ESCAPE '\'
-            ORDER BY CreatedUtc DESC, Id
-            OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
-            """, new { pattern, offset = (page - 1) * pageSize, pageSize }, cancellationToken: ct));
-        var total = await multi.ReadSingleAsync<int>();
-        var items = (await multi.ReadAsync<UserRecord>()).AsList();
+        var total = await query.CountAsync(ct);
+        var items = await query
+            .OrderByDescending(u => u.CreatedUtc).ThenBy(u => u.Id)
+            .Skip((page - 1) * pageSize).Take(pageSize)
+            .ToListAsync(ct);
         return (items, total);
     }
-
-    private static string EscapeLike(string value) =>
-        value.Replace(@"\", @"\\").Replace("%", @"\%").Replace("_", @"\_").Replace("[", @"\[");
 }

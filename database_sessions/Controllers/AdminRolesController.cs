@@ -14,11 +14,12 @@ public sealed class AdminRolesController(RoleRepository roles, AuditLogger audit
     [HasPermission(Permissions.RolesRead)]
     public async Task<IEnumerable<RoleResponse>> ListRoles(CancellationToken ct) =>
         (await roles.ListWithPermissionsAsync(ct))
-            .Select(x => new RoleResponse(x.Role.Name, x.Role.Description, x.Role.IsSystem, x.Permissions));
+            .Select(r => new RoleResponse(r.Name, r.Description, r.IsSystem, r.Permissions));
 
     [HttpGet("permissions")]
     [HasPermission(Permissions.RolesRead)]
-    public Task<IReadOnlyList<PermissionRecord>> ListPermissions(CancellationToken ct) => roles.ListPermissionsAsync(ct);
+    public async Task<IEnumerable<PermissionResponse>> ListPermissions(CancellationToken ct) =>
+        (await roles.ListPermissionsAsync(ct)).Select(p => new PermissionResponse(p.Id, p.Name, p.Description));
 
     [HttpPost("roles")]
     [HasPermission(Permissions.RolesManage)]

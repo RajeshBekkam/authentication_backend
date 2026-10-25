@@ -37,7 +37,7 @@ public sealed class AuditLogger(
         Guid? actorUserId = null)
     {
         var http = httpContextAccessor.HttpContext;
-        var record = new AuditRecord
+        var record = new AuditLogEntry
         {
             OccurredUtc = clock.GetUtcNow(),
             EventType = eventType,
