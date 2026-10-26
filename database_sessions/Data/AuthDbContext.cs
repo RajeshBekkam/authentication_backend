@@ -14,16 +14,16 @@ public sealed class AuthDbContext(DbContextOptions<AuthDbContext> options) : DbC
 
     protected override void OnModelCreating(ModelBuilder model)
     {
-        model.HasDefaultSchema("auth");
+        model.HasDefaultSchema("auth");  //puts every table in the auth schema (auth.Users, auth.Roles, and so on)
 
         model.Entity<UserAccount>(e =>
         {
-            e.ToTable("Users");
-            e.Property(u => u.Id).ValueGeneratedNever();
-            e.Property(u => u.Email).HasMaxLength(256);
+            e.ToTable("Users");  //maps this to the Users table in the auth schema
+            e.Property(u => u.Id).ValueGeneratedNever(); //we generate the Id in code, not the database
+            e.Property(u => u.Email).HasMaxLength(256); //we limit the email length to 256 characters nvarchar(256)
             e.Property(u => u.NormalizedEmail).HasMaxLength(256);
             e.Property(u => u.PasswordHash).HasMaxLength(512);
-            e.HasIndex(u => u.NormalizedEmail).IsUnique();
+            e.HasIndex(u => u.NormalizedEmail).IsUnique(); //we create a unique index on NormalizedEmail to enforce uniqueness and speed up lookups
         });
 
         model.Entity<Role>(e =>
@@ -45,8 +45,8 @@ public sealed class AuthDbContext(DbContextOptions<AuthDbContext> options) : DbC
         model.Entity<UserRole>(e =>
         {
             e.ToTable("UserRoles");
-            e.HasKey(ur => new { ur.UserId, ur.RoleId });
-            e.HasOne(ur => ur.User).WithMany(u => u.UserRoles).HasForeignKey(ur => ur.UserId).OnDelete(DeleteBehavior.Cascade);
+            e.HasKey(ur => new { ur.UserId, ur.RoleId }); //composite primary key
+            e.HasOne(ur => ur.User).WithMany(u => u.UserRoles).HasForeignKey(ur => ur.UserId).OnDelete(DeleteBehavior.Cascade); //when a user is deleted, their roles are also deleted, one-to-many relationship
             e.HasOne(ur => ur.Role).WithMany(r => r.UserRoles).HasForeignKey(ur => ur.RoleId).OnDelete(DeleteBehavior.Cascade);
         });
 
@@ -60,10 +60,10 @@ public sealed class AuthDbContext(DbContextOptions<AuthDbContext> options) : DbC
 
         model.Entity<UserSession>(e =>
         {
-            e.ToTable("Sessions", t => t.HasCheckConstraint("CK_Sessions_Transport", "[Transport] IN ('cookie', 'bearer')"));
+            e.ToTable("Sessions", t => t.HasCheckConstraint("CK_Sessions_Transport", "[Transport] IN ('cookie', 'bearer')")); //we add a check constraint to ensure that the Transport column can only have the values 'cookie' or 'bearer'
             e.Property(s => s.Id).ValueGeneratedNever();
             e.Property(s => s.TokenHash).HasMaxLength(32).IsFixedLength();
-            e.Property(s => s.Transport).HasMaxLength(16).IsUnicode(false);
+            e.Property(s => s.Transport).HasMaxLength(16).IsUnicode(false); //IsUnicode(false) makes these varchar instead of nvarchar
             e.Property(s => s.CsrfToken).HasMaxLength(64).IsUnicode(false);
             e.Property(s => s.RevokedReason).HasMaxLength(64).IsUnicode(false);
             e.Property(s => s.IpAddress).HasMaxLength(45).IsUnicode(false);
