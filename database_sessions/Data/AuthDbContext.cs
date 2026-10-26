@@ -63,7 +63,7 @@ public sealed class AuthDbContext(DbContextOptions<AuthDbContext> options) : DbC
             e.ToTable("Sessions", t => t.HasCheckConstraint("CK_Sessions_Transport", "[Transport] IN ('cookie', 'bearer')")); //we add a check constraint to ensure that the Transport column can only have the values 'cookie' or 'bearer'
             e.Property(s => s.Id).ValueGeneratedNever();
             e.Property(s => s.TokenHash).HasMaxLength(32).IsFixedLength();
-            e.Property(s => s.Transport).HasMaxLength(16).IsUnicode(false); //IsUnicode(false) makes these varchar instead of nvarchar
+            e.Property(s => s.Transport).HasMaxLength(16).IsUnicode(false); //IsUnicode(false) makes these varchar instead of nvarchar 
             e.Property(s => s.CsrfToken).HasMaxLength(64).IsUnicode(false);
             e.Property(s => s.RevokedReason).HasMaxLength(64).IsUnicode(false);
             e.Property(s => s.IpAddress).HasMaxLength(45).IsUnicode(false);
