@@ -70,9 +70,9 @@ public sealed class AuthDbContext(DbContextOptions<AuthDbContext> options) : DbC
             e.Property(s => s.UserAgent).HasMaxLength(512);
             e.HasIndex(s => s.TokenHash).IsUnique();
             e.HasIndex(s => new { s.UserId, s.CreatedUtc })
-                .IncludeProperties(s => new { s.IdleExpiresUtc, s.AbsoluteExpiresUtc })
-                .HasFilter("[RevokedUtc] IS NULL")
-                .HasDatabaseName("IX_Sessions_UserId_Active");
+                .IncludeProperties(s => new { s.IdleExpiresUtc, s.AbsoluteExpiresUtc }) //IncludeProperties is used to include additional columns in the index to avoid lookups when querying for active sessions
+                .HasFilter("[RevokedUtc] IS NULL") //Only index active sessions (RevokedUtc is null)
+                .HasDatabaseName("IX_Sessions_UserId_Active"); //Name the index explicitly to avoid EF Core generating a long name that exceeds SQL Server's limit
             e.HasIndex(s => s.AbsoluteExpiresUtc);
             e.HasOne(s => s.User).WithMany(u => u.Sessions).HasForeignKey(s => s.UserId).OnDelete(DeleteBehavior.Cascade);
         });

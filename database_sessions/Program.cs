@@ -17,16 +17,16 @@ builder.Services.AddOptions<PasswordHashingOptions>().BindConfiguration(Password
 builder.Services.AddOptions<BootstrapAdminOptions>().BindConfiguration(BootstrapAdminOptions.Section);
 
 // Infrastructure. Repositories create a short-lived DbContext per operation via the factory.
-builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddDbContextFactory<AuthDbContext>(options => options.UseSqlServer(
+builder.Services.AddSingleton(TimeProvider.System); //This is used to get the current time in a testable way. We can inject a fake TimeProvider in tests to control the current time.
+builder.Services.AddDbContextFactory<AuthDbContext>(options => options.UseSqlServer( //A regular AddDbContext would create a long-lived DbContext that is shared across requests, which is not recommended for web applications. Using a factory allows us to create a new DbContext for each operation, which is safer and more efficient.
     builder.Configuration.GetConnectionString("AuthDb"),
-    sql => sql.UseQuerySplittingBehavior(QuerySplittingBehavior.SingleQuery)));
+    sql => sql.UseQuerySplittingBehavior(QuerySplittingBehavior.SingleQuery))); //singleQeuery is more efficient for our data model, which has many one-to-many relationships, splitting queries can result in a lot of duplicate data being returned from the database and can cause performance issues.
 builder.Services.AddSingleton<UserRepository>();
 builder.Services.AddSingleton<SessionRepository>();
 builder.Services.AddSingleton<RoleRepository>();
 builder.Services.AddSingleton<AuditRepository>();
 builder.Services.AddSingleton<Argon2PasswordHasher>();
-builder.Services.AddHttpContextAccessor();
+builder.Services.AddHttpContextAccessor(); // to get the current request's IP address for rate limiting and logging
 builder.Services.AddScoped<AuditLogger>();
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<AdminBootstrapper>();
