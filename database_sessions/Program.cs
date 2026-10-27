@@ -23,11 +23,11 @@ builder.Services.AddDbContextFactory<AuthDbContext>(options => options.UseSqlSer
     sql => sql.UseQuerySplittingBehavior(QuerySplittingBehavior.SingleQuery))); //singleQeuery is more efficient for our data model, which has many one-to-many relationships, splitting queries can result in a lot of duplicate data being returned from the database and can cause performance issues.
 builder.Services.AddSingleton<UserRepository>();
 builder.Services.AddSingleton<SessionRepository>();
-builder.Services.AddSingleton<RoleRepository>();
+builder.Services.AddSingleton<RoleRepository>(); //As we are using AddDbContextFactory for the DbContext, we can safely register the repositories as singletons. They will create a new DbContext for each operation, so they don't hold onto any state between requests.
 builder.Services.AddSingleton<AuditRepository>();
 builder.Services.AddSingleton<Argon2PasswordHasher>();
 builder.Services.AddHttpContextAccessor(); // to get the current request's IP address for rate limiting and logging
-builder.Services.AddScoped<AuditLogger>();
+builder.Services.AddScoped<AuditLogger>(); //AuditLogger and AuthService are scoped, one per request, because they use the request’s HttpContext (IP, user agent). A scoped service can depend on singletons, but a singleton can’t depend on scoped ones, which is why the repositories can’t take them.
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<AdminBootstrapper>();
 builder.Services.AddHostedService<SessionCleanupService>();
